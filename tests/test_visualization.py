@@ -248,3 +248,51 @@ def test_chunk_file_invalid_format(visualizer_server):
     error_detail = json.loads(response.read().decode())
     assert "detail" in error_detail
     assert error_detail["detail"].lower() == "only text files are supported."
+
+
+
+def test_visualizer_rejects_oversized_upload(visualizer_server):
+    url = f"{visualizer_server['url']}/api/chunk"
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _multipart_post(
+            url,
+            file_content=b"x" * (10 * 1024 * 1024 + 1),
+            file_name="large.txt",
+            fields={"mode": "document", "params": "{}"},
+            headers=None,
+        )
+    assert exc_info.value.code == 413
+
+
+def test_visualizer_rejects_unknown_or_invalid_chunking_parameters(visualizer_server):
+    url = f"{visualizer_server['url']}/api/chunk"
+    sample = Path(__file__).parent.parent / "samples" / "sample_text.txt"
+    invalid_params = [
+        '{"token_counter":"not-a-callable"}',
+        "[]",
+        '{"max_sentences":0}',
+    ]
+    for params in invalid_params:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _multipart_post(
+                url,
+                file_content=sample.read_bytes(),
+                file_name="sample_text.txt",
+                fields={"mode": "document", "params": params},
+                headers=None,
+            )
+        assert exc_info.value.code == 400
+
+
+def test_visualizer_rejects_unknown_mode(visualizer_server):
+    url = f"{visualizer_server['url']}/api/chunk"
+    sample = Path(__file__).parent.parent / "samples" / "sample_text.txt"
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _multipart_post(
+            url,
+            file_content=sample.read_bytes(),
+            file_name="sample_text.txt",
+            fields={"mode": "admin", "params": "{}"},
+            headers=None,
+        )
+    assert exc_info.value.code == 400
