@@ -29,10 +29,11 @@ except ImportError:  # pragma: no cover
     Response = lambda x: x  # noqa: E731
     StaticFiles = None
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from chunklet.code_chunker import CodeChunker
 from chunklet.common.validation import validate_input
 from chunklet.document_chunker import DocumentChunker
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -316,6 +317,8 @@ class Visualizer:
                 media_type="application/json",
             )
 
+        except HTTPException:
+            raise
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(
