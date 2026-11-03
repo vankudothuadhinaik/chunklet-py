@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 import aiofiles
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
     import msgpack
@@ -28,8 +29,6 @@ except ImportError:  # pragma: no cover
     HTMLResponse = lambda x: x  # noqa: E731
     Response = lambda x: x  # noqa: E731
     StaticFiles = None
-
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from chunklet.code_chunker import CodeChunker
 from chunklet.common.validation import validate_input
