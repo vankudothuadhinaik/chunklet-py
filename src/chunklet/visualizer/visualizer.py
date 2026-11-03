@@ -32,7 +32,82 @@ except ImportError:  # pragma: no cover
 from chunklet.code_chunker import CodeChunker
 from chunklet.common.validation import validate_input
 from chunklet.document_chunker import DocumentChunker
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+class _UploadTooLarge(Exception):
+    pass
+
+
+class UploadSizeLimitMiddleware:
+    """Reject oversized visualizer uploads before multipart parsing buffers them."""
+
+    def __init__(self, app, max_bytes: int = MAX_UPLOAD_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path") != "/api/chunk":
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > self.max_bytes:
+                    await self._send_too_large(scope, receive, send)
+                    return
+            except ValueError:
+                pass
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _UploadTooLarge()
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _UploadTooLarge:
+            await self._send_too_large(scope, receive, send)
+
+    async def _send_too_large(self, scope, receive, send):
+        response = Response(
+            content='{"detail":"Upload exceeds the 10 MiB request limit."}',
+            status_code=413,
+            media_type="application/json",
+        )
+        await response(scope, receive, send)
+
+
+class _DocumentChunkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lang: str | None = Field(default=None, min_length=1)
+    max_tokens: int | None = Field(default=None, ge=12)
+    max_sentences: int | None = Field(default=None, ge=1)
+    max_section_breaks: int | None = Field(default=None, ge=1)
+    overlap_percent: int | None = Field(default=None, ge=0, le=75)
+
+
+class _CodeChunkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_tokens: int | None = Field(default=None, ge=12)
+    max_lines: int | None = Field(default=None, ge=5)
+    max_functions: int | None = Field(default=None, ge=1)
+    strict: bool = True
 
 class Visualizer:
     """A FastAPI-based web interface for visualizing document and code chunks.
@@ -84,6 +159,7 @@ class Visualizer:
         self._token_counter = token_counter
 
         self.app = FastAPI()
+        self.app.add_middleware(UploadSizeLimitMiddleware, max_bytes=MAX_UPLOAD_BYTES)
 
         # Initialize chunkers with sensible defaults; constraint attributes are
         # mutated per request from the submitted params.
@@ -149,15 +225,28 @@ class Visualizer:
         Raises:
             HTTPException: If chunking fails.
         """
-        # Parse params JSON and filter out None values
-        try:
-            chunker_params = json.loads(params)
-            chunker_params = {k: v for k, v in chunker_params.items() if v is not None}
-        except (json.JSONDecodeError, TypeError):
-            raise HTTPException(
-                400, f"Invalid chunking parameters JSON: {params}"
-            ) from None
+        # Validate the mode and accept only the documented per-mode parameters.
+        if mode not in {"document", "code"}:
+            raise HTTPException(400, "Mode must be either 'document' or 'code'.")
 
+        try:
+            raw_params = json.loads(params)
+            if not isinstance(raw_params, dict):
+                raise ValueError("Chunking parameters must be a JSON object.")
+            params_model = (
+                _DocumentChunkParams.model_validate(raw_params)
+                if mode == "document"
+                else _CodeChunkParams.model_validate(raw_params)
+            )
+            chunker_params = params_model.model_dump(
+                exclude_unset=True,
+                exclude_none=True,
+            )
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
+            raise HTTPException(
+                400,
+                "Invalid chunking parameters for the selected mode.",
+            ) from None
         # Use Python mimetypes instead of browser content_type for accuracy
         mimetype, _ = mimetypes.guess_type(file.filename or "")
         if not mimetype or not mimetype.startswith("text/"):
@@ -175,19 +264,34 @@ class Visualizer:
         text = content.decode(encoding, errors="ignore")
 
         try:
+            if "max_tokens" in chunker_params and self._token_counter is None:
+                raise HTTPException(
+                    400,
+                    "Token-based chunking requires a configured token counter.",
+                )
+
             if mode == "code":
-                # 'strict' is a per-call arg; the rest are constraint attributes.
+                # Build an isolated chunker per request so one browser session cannot
+                # mutate the shared configuration used by another request.
                 strict = chunker_params.pop("strict", True)
-                chunker = self.code_chunker
-                for key, value in chunker_params.items():
-                    setattr(chunker, key, value)
+                code_options = {"max_lines": 50, **chunker_params}
+                chunker = CodeChunker(
+                    token_counter=self._token_counter,
+                    **code_options,
+                )
                 chunks = [
                     dict(chunk) for chunk in chunker.chunk_text(text, strict=strict)
                 ]
             else:
-                chunker = self.document_chunker
-                for key, value in chunker_params.items():
-                    setattr(chunker, key, value)
+                document_options = {
+                    "lang": "en",
+                    "max_sentences": 3,
+                    **chunker_params,
+                }
+                chunker = DocumentChunker(
+                    token_counter=self._token_counter,
+                    **document_options,
+                )
                 chunks = [dict(chunk) for chunk in chunker.chunk_text(text)]
 
             response_data = {
