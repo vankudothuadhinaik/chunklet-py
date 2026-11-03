@@ -296,3 +296,21 @@ def test_visualizer_rejects_unknown_mode(visualizer_server):
             headers=None,
         )
     assert exc_info.value.code == 400
+
+
+
+def test_visualizer_rejects_token_limit_without_configured_counter(visualizer_server):
+    url = f"{visualizer_server['url']}/api/chunk"
+    sample = Path(__file__).parent.parent / "samples" / "sample_text.txt"
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _multipart_post(
+            url,
+            file_content=sample.read_bytes(),
+            file_name="sample_text.txt",
+            fields={
+                "mode": "document",
+                "params": '{"max_tokens":12}',
+            },
+            headers=None,
+        )
+    assert exc_info.value.code == 400
