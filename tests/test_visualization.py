@@ -139,7 +139,7 @@ def test_chunk_file(visualizer_server):
     data = {
         "mode": "document",
         "params": json.dumps(
-            {"max_sentences": 3, "overlap_percent": 20}  # Chunk by 3 sentences
+            {"max_sentences": "3", "overlap_percent": "20"}  # Browser form values are strings.
         ),
     }
     headers = {"Accept": "application/msgpack"}
@@ -198,8 +198,8 @@ def test_chunk_file_json_backward_compatible(visualizer_server):
     assert result["stats"]["chunk_count"] > 1
 
 
-def test_chunk_file_lang_param(visualizer_server):
-    """Test that a lang param submitted from the UI is applied to the chunker."""
+def test_chunk_file_lang_param_is_request_scoped(visualizer_server):
+    """Test that a lang param is accepted without mutating shared chunker state."""
     url = f"{visualizer_server['url']}/api/chunk"
 
     sample_file_path = Path(__file__).parent.parent / "samples" / "sample_text.txt"
@@ -222,9 +222,8 @@ def test_chunk_file_lang_param(visualizer_server):
     assert result["stats"]["mode"] == "document"
     assert result["stats"]["chunk_count"] > 0
 
-    # The lang value must have propagated to the shared document chunker via
-    # the backend's setattr loop, not just been accepted for this request.
-    assert visualizer_server["visualizer"].document_chunker.lang == "fr"
+    # Per-request chunkers prevent one caller from changing another caller's defaults.
+    assert visualizer_server["visualizer"].document_chunker.lang == "en"
 
 
 def test_chunk_file_invalid_format(visualizer_server):
